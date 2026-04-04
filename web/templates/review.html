@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Review Details - Agentic Code Review</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="/" class="logo">
+                <div class="logo-icon">&#9881;</div>
+                <div>
+                    <h1>Agentic Code Review</h1>
+                    <span>AI-powered multi-agent analysis</span>
+                </div>
+            </a>
+            <nav>
+                <a href="/">&#8592; Back to Home</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <div class="review-meta" id="review-meta">
+                <span class="status-badge" id="review-status">loading</span>
+                <span class="review-meta-item" id="review-language"></span>
+                <span class="review-meta-item" id="review-time"></span>
+                <span class="total-duration" id="review-duration"></span>
+            </div>
+
+            <div class="workflow-viz" id="workflow-viz"></div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Submitted Code</span>
+                    <span class="lang-badge" id="code-language"></span>
+                </div>
+                <div class="code-block"><code id="code-content"></code></div>
+            </div>
+
+            <h2 style="margin-bottom: 1rem;">Agent Results</h2>
+            <div class="agent-results" id="agent-results">
+                <div class="empty-state">
+                    <div class="spinner"></div>
+                    <p style="margin-top: 1rem;">Waiting for agents to start...</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/js/app.js"></script>
+    <script>
+        const reviewId = window.location.pathname.split('/review/')[1];
+        const agentStates = {};
+        const agentFindings = {};
+        const agentProgress = {};
+        let reviewLoaded = false;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadReview();
+            connectSSE();
+        });
+
+        async function loadReview() {
+            try {
+                const resp = await fetch(`/api/reviews/${reviewId}`);
+                if (!resp.ok) throw new Error('Review not found');
+                const review = await resp.json();
+                reviewLoaded = true;
+                renderReviewHeader(review);
+                renderCode(review.code, review.language);
+                renderWorkflow(review.agents_config);
+
+                if (review.agent_results && review.agent_results.length > 0) {
+                    review.agent_results.forEach(ar => {
+                        agentStates[ar.agent_name] = ar.status;
+                        if (ar.findings) agentFindings[ar.agent_name] = ar.findings;
+                    });
+                    renderAgentResults();
+                    updateWorkflow();
+                }
+            } catch (err) {
+                console.error('Failed to load review:', err);
+            }
+        }
+
+        function connectSSE() {
+            const source = new EventSource(`/api/reviews/${reviewId}/stream`);
+
+            source.addEventListener('agent_status', (e) => {
+                const data = JSON.parse(e.data);
+                agentStates[data.agent_name] = data.status;
+                updateWorkflow();
+                renderAgentResults();
+            });
+
+            source.addEventListener('agent_progress', (e) => {
+                const data = JSON.parse(e.data);
+                if (!agentProgress[data.agent_name]) agentProgress[data.agent_name] = '';
+                agentProgress[data.agent_name] += data.partial;
+                updateAgentProgress(data.agent_name);
+            });
+
+            source.addEventListener('agent_complete', (e) => {
+                const data = JSON.parse(e.data);
+                agentStates[data.agent_name] = 'completed';
+                agentFindings[data.agent_name] = data.findings || [];
+                updateWorkflow();
+                renderAgentResults();
+            });
+
+            source.addEventListener('agent_error', (e) => {
+                const data = JSON.parse(e.data);
+                agentStates[data.agent_name] = 'failed';
+                updateWorkflow();
+                renderAgentResults();
+            });
+
+            source.addEventListener('review_complete', (e) => {
+                const data = JSON.parse(e.data);
+                source.close();
+                document.getElementById('review-status').className = `status-badge status-${data.status}`;
+                document.getElementById('review-status').textContent = data.status;
+                if (data.duration_ms) {
+                    document.getElementById('review-duration').textContent = formatDuration(data.duration_ms);
+                }
+                updateWorkflow();
+            });
+
+            source.addEventListener('error', (e) => {
+                try {
+                    const data = e.data ? JSON.parse(e.data) : {};
+                    if (data.error) console.error('SSE error:', data.error);
+                } catch (_) {
+                    // Native EventSource error events don't have parseable data
+                }
+            });
+
+            source.onerror = () => {
+                source.close();
+            };
+        }
+
+        function renderReviewHeader(review) {
+            const statusEl = document.getElementById('review-status');
+            statusEl.className = `status-badge status-${review.status}`;
+            statusEl.textContent = review.status;
+
+            document.getElementById('review-language').textContent = review.language.toUpperCase();
+            document.getElementById('review-time').textContent = formatDate(review.created_at);
+            document.getElementById('code-language').textContent = review.language;
+
+            if (review.duration_ms) {
+                document.getElementById('review-duration').textContent = formatDuration(review.duration_ms);
+            }
+        }
+
+        function renderCode(code, language) {
+            const el = document.getElementById('code-content');
+            const lines = code.split('\n');
+            el.innerHTML = lines.map((line, i) => {
+                const num = String(i + 1).padStart(4);
+                return `<span style="color:var(--text-muted);user-select:none;">${num}</span>  ${escapeHtml(line)}`;
+            }).join('\n');
+        }
+
+        function renderWorkflow(agentsConfig) {
+            if (!agentsConfig) return;
+            const viz = document.getElementById('workflow-viz');
+            const phase1 = agentsConfig.filter(a => a !== 'improvement');
+            const phase2 = agentsConfig.filter(a => a === 'improvement');
+
+            let html = '';
+            if (phase1.length > 0) {
+                html += '<span class="phase-label">Phase 1 (parallel)</span>';
+                html += '<div class="phase-group">';
+                phase1.forEach(a => {
+                    html += `<span class="wf-agent ${agentStates[a] || 'pending'}" id="wf-${a}">${agentDisplayName(a)}</span>`;
+                });
+                html += '</div>';
+            }
+            if (phase2.length > 0) {
+                html += '<span class="phase-arrow">&#8594;</span>';
+                html += '<span class="phase-label">Phase 2</span>';
+                html += '<div class="phase-group">';
+                phase2.forEach(a => {
+                    html += `<span class="wf-agent ${agentStates[a] || 'pending'}" id="wf-${a}">${agentDisplayName(a)}</span>`;
+                });
+                html += '</div>';
+            }
+            viz.innerHTML = html;
+        }
+
+        function updateWorkflow() {
+            Object.entries(agentStates).forEach(([name, status]) => {
+                const el = document.getElementById(`wf-${name}`);
+                if (el) {
+                    el.className = `wf-agent ${status}`;
+                }
+            });
+        }
+
+        function renderAgentResults() {
+            const container = document.getElementById('agent-results');
+            const agents = Object.keys(agentStates);
+            if (agents.length === 0) return;
+
+            container.innerHTML = '';
+            const order = ['security', 'style', 'test_generator', 'improvement'];
+            const sorted = agents.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+
+            sorted.forEach(name => {
+                const status = agentStates[name];
+                const findings = agentFindings[name] || [];
+                const icon = agentIcon(name);
+                const expanded = status === 'completed' || status === 'failed' ? 'expanded' : '';
+
+                let findingsHtml = '';
+                if (findings.length > 0) {
+                    findingsHtml = findings.map(f => renderFinding(f)).join('');
+                } else if (status === 'completed') {
+                    findingsHtml = '<p style="color:var(--text-muted);">No findings reported.</p>';
+                } else if (status === 'failed') {
+                    findingsHtml = '<p style="color:var(--danger);">Agent failed to complete analysis.</p>';
+                }
+
+                const card = document.createElement('div');
+                card.className = `agent-card ${status} ${expanded}`;
+                card.id = `agent-${name}`;
+                card.innerHTML = `
+                    <div class="agent-card-header" onclick="toggleAgent('${name}')">
+                        <div class="agent-info">
+                            <div class="agent-icon ${name}">${icon}</div>
+                            <span class="agent-name">${agentDisplayName(name)}</span>
+                        </div>
+                        <div class="agent-meta">
+                            ${status === 'running' ? '<span class="spinner"></span>' : ''}
+                            ${status === 'completed' ? '<span>' + findings.length + ' finding' + (findings.length !== 1 ? 's' : '') + '</span>' : ''}
+                            <span class="status-badge status-${status}">${status}</span>
+                            <span class="chevron">&#9654;</span>
+                        </div>
+                    </div>
+                    <div class="agent-progress" id="progress-${name}">${escapeHtml(agentProgress[name] || '')}</div>
+                    <div class="agent-card-body">${findingsHtml}</div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function renderFinding(f) {
+            const lineInfo = f.line_start ? `<div class="finding-line">Line ${f.line_start}${f.line_end && f.line_end !== f.line_start ? '-' + f.line_end : ''}</div>` : '';
+            const suggestion = f.suggestion ? `<div class="finding-suggestion">${escapeHtml(f.suggestion)}</div>` : '';
+            return `
+                <div class="finding ${f.severity}">
+                    <div class="finding-header">
+                        <span class="finding-severity ${f.severity}">${f.severity}</span>
+                        <span class="finding-title">${escapeHtml(f.title)}</span>
+                    </div>
+                    <div class="finding-description">${escapeHtml(f.description)}</div>
+                    ${lineInfo}
+                    ${suggestion}
+                </div>
+            `;
+        }
+
+        function updateAgentProgress(name) {
+            const el = document.getElementById(`progress-${name}`);
+            if (el) {
+                el.textContent = (agentProgress[name] || '').slice(-500);
+                el.scrollTop = el.scrollHeight;
+            }
+        }
+
+        function toggleAgent(name) {
+            const card = document.getElementById(`agent-${name}`);
+            if (card) card.classList.toggle('expanded');
+        }
+
+        function agentDisplayName(name) {
+            const names = {
+                security: 'Security Auditor',
+                style: 'Style Reviewer',
+                test_generator: 'Test Generator',
+                improvement: 'Improvement Advisor'
+            };
+            return names[name] || name;
+        }
+
+        function agentIcon(name) {
+            const icons = { security: '&#128274;', style: '&#9997;', test_generator: '&#9989;', improvement: '&#128161;' };
+            return icons[name] || '&#9881;';
+        }
+    </script>
+</body>
+</html>

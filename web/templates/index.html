@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic Code Review</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="/" class="logo">
+                <div class="logo-icon">&#9881;</div>
+                <div>
+                    <h1>Agentic Code Review</h1>
+                    <span>AI-powered multi-agent analysis</span>
+                </div>
+            </a>
+            <nav>
+                <a href="/">Home</a>
+            </nav>
+        </div>
+    </header>
+
+    <main>
+        <div class="container">
+            <div class="two-col">
+                <div>
+                    <h2 class="page-title">Submit Code for Review</h2>
+                    <p class="page-subtitle">Paste your code and let our AI agents analyze it</p>
+
+                    <div id="error-msg" class="error-msg"></div>
+
+                    <form id="review-form">
+                        <div class="form-group">
+                            <label for="code-input">Source Code</label>
+                            <textarea id="code-input" placeholder="Paste your code here (up to 500 lines)..." spellcheck="false"></textarea>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="language-select">Programming Language</label>
+                            <select id="language-select">
+                                <option value="go">Go</option>
+                                <option value="java">Java</option>
+                                <option value="csharp">C#</option>
+                                <option value="python">Python</option>
+                                <option value="javascript">JavaScript</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label>AI Agents</label>
+                            <div class="agent-toggles">
+                                <label class="agent-toggle">
+                                    <input type="checkbox" name="agents" value="security" checked>
+                                    <div>
+                                        <div class="agent-label">&#128274; Security</div>
+                                        <div class="agent-desc">Vulnerability scanning</div>
+                                    </div>
+                                </label>
+                                <label class="agent-toggle">
+                                    <input type="checkbox" name="agents" value="style" checked>
+                                    <div>
+                                        <div class="agent-label">&#9997; Style</div>
+                                        <div class="agent-desc">Code conventions</div>
+                                    </div>
+                                </label>
+                                <label class="agent-toggle">
+                                    <input type="checkbox" name="agents" value="test_generator" checked>
+                                    <div>
+                                        <div class="agent-label">&#9989; Test Generator</div>
+                                        <div class="agent-desc">Unit test creation</div>
+                                    </div>
+                                </label>
+                                <label class="agent-toggle">
+                                    <input type="checkbox" name="agents" value="improvement" checked>
+                                    <div>
+                                        <div class="agent-label">&#128161; Improvement</div>
+                                        <div class="agent-desc">Refactoring &amp; synthesis</div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary" id="submit-btn">
+                            Start Review
+                        </button>
+                    </form>
+                </div>
+
+                <div>
+                    <h2 class="page-title">Recent Reviews</h2>
+                    <p class="page-subtitle">Click a review to see full results</p>
+
+                    <div class="card" style="padding: 0">
+                        <ul class="review-list" id="review-list">
+                            <li class="empty-state" id="empty-state">
+                                <p>No reviews yet</p>
+                                <p>Submit code to get started</p>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="/static/js/app.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            loadReviewList();
+
+            document.getElementById('review-form').addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const code = document.getElementById('code-input').value;
+                const language = document.getElementById('language-select').value;
+                const agentCheckboxes = document.querySelectorAll('input[name="agents"]:checked');
+                const agents = Array.from(agentCheckboxes).map(cb => cb.value);
+
+                const errorEl = document.getElementById('error-msg');
+                errorEl.style.display = 'none';
+
+                if (!code.trim()) {
+                    showError('Please enter some code to review');
+                    return;
+                }
+                if (agents.length === 0) {
+                    showError('Please select at least one agent');
+                    return;
+                }
+
+                const btn = document.getElementById('submit-btn');
+                btn.disabled = true;
+                btn.innerHTML = '<span class="spinner"></span> Submitting...';
+
+                try {
+                    const resp = await fetch('/api/reviews', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code, language, agents })
+                    });
+
+                    if (!resp.ok) {
+                        const data = await resp.json();
+                        throw new Error(data.error || 'Failed to submit review');
+                    }
+
+                    const data = await resp.json();
+                    window.location.href = '/review/' + data.id;
+                } catch (err) {
+                    showError(err.message);
+                    btn.disabled = false;
+                    btn.innerHTML = 'Start Review';
+                }
+            });
+        });
+
+        function showError(msg) {
+            const el = document.getElementById('error-msg');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+
+        async function loadReviewList() {
+            try {
+                const resp = await fetch('/api/reviews?limit=20');
+                const data = await resp.json();
+
+                const list = document.getElementById('review-list');
+                const empty = document.getElementById('empty-state');
+
+                if (data.reviews.length === 0) {
+                    empty.style.display = 'block';
+                    return;
+                }
+
+                empty.style.display = 'none';
+                list.innerHTML = '';
+
+                data.reviews.forEach(review => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <a href="/review/${review.id}" class="review-item">
+                            <div class="review-item-left">
+                                <span class="lang-badge">${review.language}</span>
+                                <span>${formatDate(review.created_at)}</span>
+                            </div>
+                            <div class="review-item-right">
+                                ${review.duration_ms ? '<span class="duration">' + formatDuration(review.duration_ms) + '</span>' : ''}
+                                <span class="status-badge status-${review.status}">${review.status}</span>
+                            </div>
+                        </a>
+                    `;
+                    list.appendChild(li);
+                });
+            } catch (err) {
+                console.error('Failed to load reviews:', err);
+            }
+        }
+    </script>
+</body>
+</html>
