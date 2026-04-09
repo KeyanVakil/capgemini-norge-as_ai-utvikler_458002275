@@ -214,13 +214,13 @@
 
             sorted.forEach(name => {
                 const status = agentStates[name];
-                const findings = agentFindings[name] || [];
+                const findings = normalizeFindings(name, agentFindings[name] || []);
                 const icon = agentIcon(name);
                 const expanded = status === 'completed' || status === 'failed' ? 'expanded' : '';
 
                 let findingsHtml = '';
                 if (findings.length > 0) {
-                    findingsHtml = findings.map(f => renderFinding(f)).join('');
+                    findingsHtml = findings.map(f => renderFinding(f, name)).join('');
                 } else if (status === 'completed') {
                     findingsHtml = '<p style="color:var(--text-muted);">No findings reported.</p>';
                 } else if (status === 'failed') {
@@ -250,9 +250,9 @@
             });
         }
 
-        function renderFinding(f) {
+        function renderFinding(f, agentName) {
             const lineInfo = f.line_start ? `<div class="finding-line">Line ${f.line_start}${f.line_end && f.line_end !== f.line_start ? '-' + f.line_end : ''}</div>` : '';
-            const suggestion = f.suggestion ? `<div class="finding-suggestion">${escapeHtml(f.suggestion)}</div>` : '';
+            const suggestion = renderSuggestion(f.suggestion, agentName);
             return `
                 <div class="finding ${f.severity}">
                     <div class="finding-header">
@@ -264,6 +264,125 @@
                     ${suggestion}
                 </div>
             `;
+        }
+
+        function normalizeFindings(agentName, findings) {
+            if (!Array.isArray(findings) || findings.length !== 1) return findings;
+
+            const only = findings[0];
+            if (
+                agentName !== 'test_generator' ||
+                only.title !== 'Review Complete' ||
+                typeof only.description !== 'string'
+            ) {
+                return findings;
+            }
+
+            const recovered = tryParseFindingsArray(only.description);
+            return recovered.length > 0 ? recovered : findings;
+        }
+
+        function tryParseFindingsArray(raw) {
+            const trimmed = String(raw || '').trim();
+            if (!trimmed.startsWith('[')) return [];
+
+            try {
+                const parsed = JSON.parse(trimmed);
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (_) {
+                return parsePartialFindingsArray(trimmed);
+            }
+        }
+
+        function parsePartialFindingsArray(raw) {
+            const objects = [];
+            let start = -1;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+
+            for (let i = 0; i < raw.length; i++) {
+                const ch = raw[i];
+
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (inString && ch === '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (ch === '"') {
+                    inString = !inString;
+                    continue;
+                }
+                if (inString) continue;
+
+                if (ch === '{') {
+                    if (depth === 0) start = i;
+                    depth += 1;
+                } else if (ch === '}') {
+                    depth -= 1;
+                    if (depth === 0 && start !== -1) {
+                        const candidate = raw.slice(start, i + 1);
+                        try {
+                            const parsed = JSON.parse(candidate);
+                            objects.push(parsed);
+                        } catch (_) {
+                            // Skip malformed fragments and keep scanning.
+                        }
+                        start = -1;
+                    }
+                }
+            }
+
+            return objects;
+        }
+
+        function renderSuggestion(suggestion, agentName) {
+            if (!suggestion) return '';
+
+            const normalized = normalizeSuggestion(suggestion);
+            if (!normalized) return '';
+
+            if (shouldRenderAsCode(normalized, agentName)) {
+                return `
+                    <div class="finding-suggestion code-suggestion">
+                        <div class="suggestion-label">Generated Test</div>
+                        <pre><code>${escapeHtml(normalized)}</code></pre>
+                    </div>
+                `;
+            }
+
+            return `<div class="finding-suggestion">${escapeHtml(normalized)}</div>`;
+        }
+
+        function normalizeSuggestion(suggestion) {
+            let value = String(suggestion).trim();
+            if (!value) return '';
+
+            // Some model outputs wrap the full code suggestion in a quoted JSON string.
+            if (value.startsWith('"') && value.endsWith('"')) {
+                try {
+                    value = JSON.parse(value);
+                } catch (_) {
+                    // Keep the original string if it is not valid JSON.
+                }
+            }
+
+            return value.trim();
+        }
+
+        function shouldRenderAsCode(suggestion, agentName) {
+            if (agentName === 'test_generator') return true;
+
+            return suggestion.includes('\n') && (
+                suggestion.includes('def test_') ||
+                suggestion.includes('func Test') ||
+                suggestion.includes('@Test') ||
+                suggestion.includes('[Fact]') ||
+                suggestion.includes('describe(')
+            );
         }
 
         function updateAgentProgress(name) {

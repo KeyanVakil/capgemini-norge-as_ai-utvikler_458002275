@@ -53,15 +53,19 @@ func ParseFindings(rawOutput string, defaultCategory model.Category) []model.Fin
 		var wrapper struct {
 			Findings []model.Finding `json:"findings"`
 		}
-		if err2 := json.Unmarshal([]byte(jsonStr), &wrapper); err2 != nil {
-			return []model.Finding{{
-				Severity:    model.SeverityInfo,
-				Category:    defaultCategory,
-				Title:       "Review Complete",
-				Description: rawOutput,
-			}}
+		if err2 := json.Unmarshal([]byte(jsonStr), &wrapper); err2 == nil {
+			findings = wrapper.Findings
+		} else {
+			findings = extractPartialFindings(rawOutput)
+			if len(findings) == 0 {
+				return []model.Finding{{
+					Severity:    model.SeverityInfo,
+					Category:    defaultCategory,
+					Title:       "Review Complete",
+					Description: rawOutput,
+				}}
+			}
 		}
-		findings = wrapper.Findings
 	}
 
 	for i := range findings {
@@ -122,4 +126,60 @@ func extractBracketed(text string, start int, open, close byte) string {
 		}
 	}
 	return ""
+}
+
+func extractPartialFindings(text string) []model.Finding {
+	var findings []model.Finding
+
+	start := strings.Index(text, "[")
+	if start == -1 {
+		start = strings.Index(text, "{")
+	}
+	if start == -1 {
+		return nil
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	objStart := -1
+
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString && ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '{':
+			if depth == 1 && objStart == -1 {
+				objStart = i
+			}
+			depth++
+		case '}':
+			depth--
+			if depth == 1 && objStart != -1 {
+				var finding model.Finding
+				candidate := text[objStart : i+1]
+				if err := json.Unmarshal([]byte(candidate), &finding); err == nil {
+					findings = append(findings, finding)
+				}
+				objStart = -1
+			}
+		}
+	}
+
+	return findings
 }

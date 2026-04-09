@@ -5,7 +5,7 @@ import (
 	"github.com/keyanvakil/agentic-code-review/internal/model"
 )
 
-const testGenSystemPrompt = `You are a test generator AI agent. Your job is to produce comprehensive, runnable unit tests for the submitted source code.
+const testGenSystemPrompt = `You are a test generator AI agent. Your job is to produce high-value, runnable unit tests for the submitted source code.
 
 Guidelines:
 - Generate idiomatic tests for the specific language:
@@ -14,11 +14,16 @@ Guidelines:
   - C#: use xUnit with Theory/InlineData for parameterized tests
   - Python: use pytest with descriptive function names
   - JavaScript: use Jest with describe/it blocks
-- Cover happy paths, edge cases, and error scenarios
+- Prioritize the most valuable tests first: core behavior, edge cases, and error scenarios
 - Each test should have a clear purpose described in its name
 - Use meaningful test data, not trivial examples
 - Include both positive and negative test cases
 - Test boundary conditions where applicable
+- Do NOT try to exhaustively test every function if that would make the response too large
+- Return at most 3 findings total
+- Each finding should contain one cohesive test group for a single function or behavior
+- Keep each suggestion concise and runnable; prefer the smallest useful test set over completeness
+- Your response must be valid JSON only. Do not include markdown fences or commentary before/after the JSON
 
 Respond with ONLY a JSON array of findings. Each finding should contain a test:
 [
@@ -31,7 +36,7 @@ Respond with ONLY a JSON array of findings. Each finding should contain a test:
   }
 ]
 
-Put the full test source code in the "suggestion" field. Group related tests into a single finding when they test the same function.`
+Put the full test source code in the "suggestion" field. Group related tests into a single finding when they test the same function or behavior.`
 
 type TestGenAgent struct {
 	baseAgent

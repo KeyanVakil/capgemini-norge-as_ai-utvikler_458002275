@@ -81,6 +81,51 @@ func TestParseFindings_MalformedJSON(t *testing.T) {
 	}
 }
 
+func TestParseFindings_TruncatedArraySalvagesCompleteObjects(t *testing.T) {
+	input := `[
+  {
+    "severity": "info",
+    "category": "test",
+    "title": "Test run_user_command",
+    "description": "Covers command execution behavior",
+    "suggestion": "def test_run_user_command():\n    assert True"
+  },
+  {
+    "severity": "info",
+    "category": "test",
+    "title": "Test divide",
+    "description": "Covers divide edge cases",
+    "suggestion": "def test_divide():\n    assert True"
+  },
+  {
+    "severity": "info",
+    "category": "test",
+    "title": "Cut off mid-object"`
+
+	findings := ParseFindings(input, model.CategoryTest)
+	if len(findings) != 2 {
+		t.Fatalf("expected 2 salvaged findings, got %d", len(findings))
+	}
+	if findings[0].Title != "Test run_user_command" {
+		t.Errorf("expected first salvaged finding, got %s", findings[0].Title)
+	}
+	if findings[1].Title != "Test divide" {
+		t.Errorf("expected second salvaged finding, got %s", findings[1].Title)
+	}
+}
+
+func TestParseFindings_TruncatedWrappedJSONFallsBack(t *testing.T) {
+	input := `{"findings":[{"severity":"info","title":"One","description":"ok"},{"severity":"info","title":"Two"`
+
+	findings := ParseFindings(input, model.CategoryTest)
+	if len(findings) != 1 {
+		t.Fatalf("expected fallback finding, got %d", len(findings))
+	}
+	if findings[0].Title != "Review Complete" {
+		t.Errorf("expected fallback title, got %s", findings[0].Title)
+	}
+}
+
 func TestParseFindings_DefaultCategory(t *testing.T) {
 	input := `[{"severity": "high", "title": "Test", "description": "No category set"}]`
 	findings := ParseFindings(input, model.CategoryImprovement)
@@ -195,6 +240,14 @@ func TestTestGenAgent_PromptsCorrectly(t *testing.T) {
 	}
 	if findings[0].Suggestion == "" {
 		t.Error("expected non-empty suggestion with test code")
+	}
+
+	call := mock.CallLog[0]
+	if !containsStr(call.SystemPrompt, "Return at most 3 findings total") {
+		t.Error("expected test generator prompt to cap finding count")
+	}
+	if !containsStr(call.SystemPrompt, "valid JSON only") {
+		t.Error("expected test generator prompt to enforce strict JSON output")
 	}
 }
 
